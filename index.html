@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reading Hub</title>
+  <style>
+    :root { --bg:#0b0c10; --fg:#e7e7e7; --muted:#b7b7b7; --card:#14161d; --border:#2a2f3a; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:16px 18px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(11,12,16,0.92); backdrop-filter: blur(6px); }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    input, button, textarea, select {
+      background:var(--card); color:var(--fg); border:1px solid var(--border);
+      border-radius:10px; padding:10px 12px; font-size:14px;
+    }
+    input { min-width: 260px; flex: 1; }
+    button { cursor:pointer; }
+    button.primary { border-color:#3b82f6; }
+    button.danger { border-color:#ef4444; }
+    main { padding:18px; max-width: 1100px; margin: 0 auto; }
+    .hint { color:var(--muted); font-size:13px; margin-top:8px; line-height:1.4; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; margin: 12px 0; }
+    .item { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .meta { color:var(--muted); font-size:12px; margin-top:4px; }
+    a { color:#93c5fd; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .badge { font-size:12px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:2px 8px; }
+    .small { font-size:12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <strong>Reading Hub</strong>
+    <span class="badge" id="status"></span>
+    <span style="flex:1"></span>
+    <button id="openUi">Open UI</button>
+    <button id="goNow" class="primary">Go to saved target</button>
+  </div>
+  <div class="row" style="margin-top:10px;">
+    <input id="q" placeholder="Search history (title / url / note)..." />
+    <select id="sort">
+      <option value="new">Newest first</option>
+      <option value="old">Oldest first</option>
+      <option value="az">Title A→Z</option>
+    </select>
+    <button id="export">Export</button>
+    <button id="import">Import</button>
+    <button id="clear" class="danger">Clear history</button>
+  </div>
+  <div class="hint">
+    Default behavior: if you visit this page normally, it auto-redirects to your saved target.<br/>
+    Add <span class="mono">#ui=1</span> to open the UI, or hold <b>Alt</b> while loading to suppress auto-redirect.
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <div class="row">
+      <input id="currentUrl" placeholder="Current target URL..." />
+      <input id="currentTitle" placeholder="Optional title..." />
+      <input id="currentNote" placeholder="Optional note..." />
+      <button id="save" class="primary">Save as current</button>
+    </div>
+    <div class="hint">
+      Tip: for PDFs, keep the <span class="mono">#page=…</span> fragment in the URL so you reopen to the right page.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;">
+      <strong>History</strong>
+      <span class="small" id="count"></span>
+    </div>
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+(() => {
+  const STORAGE_KEY = "readingHub:v1";
+
+  function nowIso() { return new Date().toISOString(); }
+  function safeJsonParse(s, fallback) { try { return JSON.parse(s); } catch { return fallback; } }
+
+  function loadState() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? safeJsonParse(raw, { current:null, history:[] }) : { current:null, history:[] };
+  }
+  function saveState(state) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function normalizeUrl(u) {
+    // Keep fragments (#page=...) — that's the whole point for PDFs.
+    // Just trim whitespace.
+    return (u || "").trim();
+  }
+
+  function parseHashParams() {
+    // Supports #set=URL&title=...&note=...&go=1 and #ui=1
+    const h = (location.hash || "").replace(/^#/, "");
+    const params = new URLSearchParams(h);
+    return params;
+  }
+
+  function setCurrent(url, title="", note="") {
+    const state = loadState();
+    const item = { url, title, note, ts: nowIso() };
+    state.current = item;
+    state.history.unshift(item);
+    // de-dupe exact same URL at top (optional)
+    state.history = state.history.filter((x, i) => i === 0 || x.url !== item.url);
+    saveState(state);
+    return state;
+  }
+
+  function formatTime(iso) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString();
+    } catch { return iso; }
+  }
+
+  function render() {
+    const state = loadState();
+    const current = state.current;
+
+    document.getElementById("status").textContent =
+      current ? `Current: ${current.title ? current.title : new URL(current.url).hostname}` : "No current target set";
+
+    document.getElementById("currentUrl").value = current?.url || "";
+    document.getElementById("currentTitle").value = current?.title || "";
+    document.getElementById("currentNote").value = current?.note || "";
+
+    const q = (document.getElementById("q").value || "").toLowerCase().trim();
+    const sort = document.getElementById("sort").value;
+
+    let items = [...state.history];
+
+    if (q) {
+      items = items.filter(x =>
+        (x.title || "").toLowerCase().includes(q) ||
+        (x.url || "").toLowerCase().includes(q) ||
+        (x.note || "").toLowerCase().includes(q)
+      );
+    }
+
+    if (sort === "old") items.reverse();
+    if (sort === "az") items.sort((a,b) => (a.title || "").localeCompare(b.title || ""));
+
+    document.getElementById("count").textContent = `${items.length} item(s) shown`;
+
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    for (const x of items) {
+      const div = document.createElement("div");
+      div.className = "card";
+      div.innerHTML = `
+        <div class="item">
+          <div style="min-width:0;">
+            <div><a href="${x.url}" target="_self" rel="noreferrer">${escapeHtml(x.title || x.url)}</a></div>
+            <div class="meta">
+              <span>${escapeHtml(formatTime(x.ts))}</span>
+              ${x.note ? ` · <span>${escapeHtml(x.note)}</span>` : ""}
+              <div class="mono" style="word-break:break-all; margin-top:6px; color: var(--muted);">${escapeHtml(x.url)}</div>
+            </div>
+          </div>
+          <div class="row" style="flex-wrap:nowrap;">
+            <button data-act="makeCurrent" data-url="${encodeAttr(x.url)}" data-title="${encodeAttr(x.title||"")}" data-note="${encodeAttr(x.note||"")}">Make current</button>
+            <button data-act="copy" data-url="${encodeAttr(x.url)}">Copy URL</button>
+            <button data-act="del" data-ts="${encodeAttr(x.ts)}" class="danger">Delete</button>
+          </div>
+        </div>
+      `;
+      list.appendChild(div);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function encodeAttr(s) {
+    return String(s).replace(/"/g, "&quot;");
+  }
+
+  function autoRedirectIfWanted() {
+    const params = parseHashParams();
+    const wantsUi = params.get("ui") === "1";
+
+    // Hold Alt while loading to prevent auto redirect (handy when you want the UI immediately).
+    const suppress = wantsUi || window.__SUPPRESS_REDIRECT === true;
+
+    if (suppress) return;
+
+    const state = loadState();
+    if (!state.current?.url) return;
+
+    // Tiny delay so you can see status / cancel if you want.
+    const status = document.getElementById("status");
+    status.textContent = "Redirecting… (hold Alt to stop)";
+    setTimeout(() => {
+      // If the user has interacted (typed search etc.), don't yank them away.
+      if (document.activeElement && ["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) return;
+      location.href = state.current.url;
+    }, 120);
+  }
+
+  // --- Event wiring ---
+  window.addEventListener("keydown", (e) => {
+    if (e.altKey) window.__SUPPRESS_REDIRECT = true;
+  }, { passive: true });
+
+  document.getElementById("openUi").addEventListener("click", () => {
+    location.hash = "ui=1";
+    render();
+  });
+
+  document.getElementById("goNow").addEventListener("click", () => {
+    const state = loadState();
+    if (state.current?.url) location.href = state.current.url;
+    else alert("No current target set yet.");
+  });
+
+  document.getElementById("save").addEventListener("click", () => {
+    const url = normalizeUrl(document.getElementById("currentUrl").value);
+    const title = (document.getElementById("currentTitle").value || "").trim();
+    const note = (document.getElementById("currentNote").value || "").trim();
+    if (!url) return alert("Paste a URL first.");
+    setCurrent(url, title, note);
+    render();
+  });
+
+  document.getElementById("q").addEventListener("input", render);
+  document.getElementById("sort").addEventListener("change", render);
+
+  document.getElementById("clear").addEventListener("click", () => {
+    if (!confirm("Clear all history and current target?")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    render();
+  });
+
+  document.getElementById("export").addEventListener("click", async () => {
+    const state = loadState();
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "reading-hub-export.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById("import").addEventListener("click", async () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const r = new FileReader();
+      r.onload = () => {
+        const state = safeJsonParse(String(r.result || ""), null);
+        if (!state || !("history" in state)) return alert("Invalid file.");
+        saveState(state);
+        render();
+      };
+      r.readAsText(file);
+    };
+    input.click();
+  });
+
+  document.body.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const act = btn.getAttribute("data-act");
+    if (!act) return;
+
+    const state = loadState();
+    if (act === "makeCurrent") {
+      const url = btn.getAttribute("data-url");
+      const title = btn.getAttribute("data-title") || "";
+      const note = btn.getAttribute("data-note") || "";
+      if (url) setCurrent(url, title, note);
+      render();
+    } else if (act === "copy") {
+      const url = btn.getAttribute("data-url");
+      if (!url) return;
+      await navigator.clipboard.writeText(url);
+      btn.textContent = "Copied!";
+      setTimeout(() => btn.textContent = "Copy URL", 700);
+    } else if (act === "del") {
+      const ts = btn.getAttribute("data-ts");
+      if (!ts) return;
+      const next = {
+        current: state.current,
+        history: state.history.filter(x => x.ts !== ts),
+      };
+      // If you deleted the current item, unset it.
+      if (state.current?.ts === ts) next.current = null;
+      saveState(next);
+      render();
+    }
+  });
+
+  // --- Handle bookmarklet "set" action via hash params ---
+  function handleSetFromHash() {
+    const params = parseHashParams();
+    const setUrl = params.get("set");
+    if (!setUrl) return;
+
+    const url = normalizeUrl(setUrl);
+    const title = (params.get("title") || "").trim();
+    const note = (params.get("note") || "").trim();
+    const go = params.get("go") === "1";
+
+    setCurrent(url, title, note);
+
+    // Clear the hash so refreshing doesn’t re-add duplicates.
+    location.hash = "ui=1";
+    render();
+
+    if (go) {
+      setTimeout(() => location.href = url, 100);
+    }
+  }
+
+  // init
+  handleSetFromHash();
+  render();
+  autoRedirectIfWanted();
+})();
+</script>
+</body>
+</html>
