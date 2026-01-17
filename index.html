@@ -317,7 +317,12 @@
     const go = params.get("go") === "1";
 
     setCurrent(url, title, note);
-
+    const close = params.get("close") === "1";
+    if (close) {
+      // give storage a moment to commit
+      setTimeout(() => window.close(), 150);
+      return;
+    }
     // Clear the hash so refreshing doesn’t re-add duplicates.
     location.hash = "ui=1";
     render();
