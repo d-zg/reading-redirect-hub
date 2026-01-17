@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Reading Hub</title>
   <style>
+    html { background: #0b0c10; }
+    body { display: none; }
+  </style>
+  <script>
+  (() => {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (params.get("ui") === "1" || params.has("set")) return;
+    try {
+      const raw = localStorage.getItem("readingHub:v1");
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      const target = state?.current?.url;
+      if (target) location.replace(target);
+    } catch {}
+  })();
+  </script>
+  <style>
     :root { --bg:#0b0c10; --fg:#e7e7e7; --muted:#b7b7b7; --card:#14161d; --border:#2a2f3a; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
     header { padding:16px 18px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(11,12,16,0.92); backdrop-filter: blur(6px); }
@@ -186,33 +203,7 @@
     return String(s).replace(/"/g, "&quot;");
   }
 
-  function autoRedirectIfWanted() {
-    const params = parseHashParams();
-    const wantsUi = params.get("ui") === "1";
-
-    // Hold Alt while loading to prevent auto redirect (handy when you want the UI immediately).
-    const suppress = wantsUi || window.__SUPPRESS_REDIRECT === true;
-
-    if (suppress) return;
-
-    const state = loadState();
-    if (!state.current?.url) return;
-
-    // Tiny delay so you can see status / cancel if you want.
-    const status = document.getElementById("status");
-    status.textContent = "Redirecting… (hold Alt to stop)";
-    setTimeout(() => {
-      // If the user has interacted (typed search etc.), don't yank them away.
-      if (document.activeElement && ["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)) return;
-      location.href = state.current.url;
-    }, 120);
-  }
-
   // --- Event wiring ---
-  window.addEventListener("keydown", (e) => {
-    if (e.altKey) window.__SUPPRESS_REDIRECT = true;
-  }, { passive: true });
-
   document.getElementById("openUi").addEventListener("click", () => {
     location.hash = "ui=1";
     render();
@@ -335,7 +326,7 @@
   // init
   handleSetFromHash();
   render();
-  autoRedirectIfWanted();
+  document.body.style.display = "";
 })();
 </script>
 </body>
