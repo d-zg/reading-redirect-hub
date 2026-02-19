@@ -9,14 +9,14 @@
     body { display: none; }
   </style>
   <script>
-  (() => {
+  (async () => {
+    const API = "https://reading-redirect-hub.danielzhang139.workers.dev";
     const params = new URLSearchParams(location.hash.slice(1));
-    if (params.get("ui") === "1" || params.has("set")) return;
+    if (params.get("ui") === "1") return;
     try {
-      const raw = localStorage.getItem("readingHub:v1");
-      if (!raw) return;
-      const state = JSON.parse(raw);
-      const target = state?.current?.url;
+      const res = await fetch(API + "/current");
+      const data = await res.json();
+      const target = data?.current?.url;
       if (target) location.replace(target);
     } catch {}
   })();
@@ -60,15 +60,12 @@
     <select id="sort">
       <option value="new">Newest first</option>
       <option value="old">Oldest first</option>
-      <option value="az">Title A→Z</option>
+      <option value="az">Title A&rarr;Z</option>
     </select>
-    <button id="export">Export</button>
-    <button id="import">Import</button>
-    <button id="clear" class="danger">Clear history</button>
   </div>
   <div class="hint">
     Default behavior: if you visit this page normally, it auto-redirects to your saved target.<br/>
-    Add <span class="mono">#ui=1</span> to open the UI, or hold <b>Alt</b> while loading to suppress auto-redirect.
+    Add <span class="mono">#ui=1</span> to open the UI.
   </div>
 </header>
 
@@ -79,9 +76,6 @@
       <input id="currentTitle" placeholder="Optional title..." />
       <input id="currentNote" placeholder="Optional note..." />
       <button id="save" class="primary">Save as current</button>
-    </div>
-    <div class="hint">
-      Tip: for PDFs, keep the <span class="mono">#page=…</span> fragment in the URL so you reopen to the right page.
     </div>
   </div>
 
@@ -96,56 +90,25 @@
 
 <script>
 (() => {
-  const STORAGE_KEY = "readingHub:v1";
+  const API = "https://reading-redirect-hub.danielzhang139.workers.dev";
 
-  function nowIso() { return new Date().toISOString(); }
-  function safeJsonParse(s, fallback) { try { return JSON.parse(s); } catch { return fallback; } }
-
-  function loadState() {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? safeJsonParse(raw, { current:null, history:[] }) : { current:null, history:[] };
-  }
-  function saveState(state) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }
-
-  function normalizeUrl(u) {
-    // Keep fragments (#page=...) — that's the whole point for PDFs.
-    // Just trim whitespace.
-    return (u || "").trim();
-  }
-
-  function parseHashParams() {
-    // Supports #set=URL&title=...&note=...&go=1 and #ui=1
-    const h = (location.hash || "").replace(/^#/, "");
-    const params = new URLSearchParams(h);
-    return params;
-  }
-
-  function setCurrent(url, title="", note="") {
-    const state = loadState();
-    const item = { url, title, note, ts: nowIso() };
-    state.current = item;
-    state.history.unshift(item);
-    // de-dupe exact same URL at top (optional)
-    state.history = state.history.filter((x, i) => i === 0 || x.url !== item.url);
-    saveState(state);
-    return state;
-  }
+  let state = { current: null, history: [] };
 
   function formatTime(iso) {
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString();
-    } catch { return iso; }
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function encodeAttr(s) {
+    return String(s).replace(/"/g, "&quot;");
   }
 
   function render() {
-    const state = loadState();
     const current = state.current;
 
     document.getElementById("status").textContent =
-      current ? `Current: ${current.title ? current.title : new URL(current.url).hostname}` : "No current target set";
+      current ? `Current: ${current.title || new URL(current.url).hostname}` : "No current target set";
 
     document.getElementById("currentUrl").value = current?.url || "";
     document.getElementById("currentTitle").value = current?.title || "";
@@ -181,14 +144,13 @@
             <div><a href="${x.url}" target="_self" rel="noreferrer">${escapeHtml(x.title || x.url)}</a></div>
             <div class="meta">
               <span>${escapeHtml(formatTime(x.ts))}</span>
-              ${x.note ? ` · <span>${escapeHtml(x.note)}</span>` : ""}
+              ${x.note ? ` &middot; <span>${escapeHtml(x.note)}</span>` : ""}
               <div class="mono" style="word-break:break-all; margin-top:6px; color: var(--muted);">${escapeHtml(x.url)}</div>
             </div>
           </div>
           <div class="row" style="flex-wrap:nowrap;">
             <button data-act="makeCurrent" data-url="${encodeAttr(x.url)}" data-title="${encodeAttr(x.title||"")}" data-note="${encodeAttr(x.note||"")}">Make current</button>
             <button data-act="copy" data-url="${encodeAttr(x.url)}">Copy URL</button>
-            <button data-act="del" data-ts="${encodeAttr(x.ts)}" class="danger">Delete</button>
           </div>
         </div>
       `;
@@ -196,72 +158,48 @@
     }
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  async function loadFromApi() {
+    const [curRes, histRes] = await Promise.all([
+      fetch(API + "/current"),
+      fetch(API + "/history"),
+    ]);
+    const curData = await curRes.json();
+    const histData = await histRes.json();
+    state.current = curData.current;
+    state.history = histData.history || [];
+    render();
   }
-  function encodeAttr(s) {
-    return String(s).replace(/"/g, "&quot;");
+
+  async function saveCurrent(url, title, note) {
+    const params = new URLSearchParams({ url, title, note });
+    const res = await fetch(API + "/set?" + params);
+    const data = await res.json();
+    state.current = data.current;
+    state.history.unshift(data.current);
+    state.history = state.history.filter((x, i) => i === 0 || x.url !== data.current.url);
+    render();
   }
 
   // --- Event wiring ---
   document.getElementById("openUi").addEventListener("click", () => {
     location.hash = "ui=1";
-    render();
   });
 
   document.getElementById("goNow").addEventListener("click", () => {
-    const state = loadState();
     if (state.current?.url) location.href = state.current.url;
     else alert("No current target set yet.");
   });
 
   document.getElementById("save").addEventListener("click", () => {
-    const url = normalizeUrl(document.getElementById("currentUrl").value);
+    const url = (document.getElementById("currentUrl").value || "").trim();
     const title = (document.getElementById("currentTitle").value || "").trim();
     const note = (document.getElementById("currentNote").value || "").trim();
     if (!url) return alert("Paste a URL first.");
-    setCurrent(url, title, note);
-    render();
+    saveCurrent(url, title, note);
   });
 
   document.getElementById("q").addEventListener("input", render);
   document.getElementById("sort").addEventListener("change", render);
-
-  document.getElementById("clear").addEventListener("click", () => {
-    if (!confirm("Clear all history and current target?")) return;
-    localStorage.removeItem(STORAGE_KEY);
-    render();
-  });
-
-  document.getElementById("export").addEventListener("click", async () => {
-    const state = loadState();
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "reading-hub-export.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  document.getElementById("import").addEventListener("click", async () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/json";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const r = new FileReader();
-      r.onload = () => {
-        const state = safeJsonParse(String(r.result || ""), null);
-        if (!state || !("history" in state)) return alert("Invalid file.");
-        saveState(state);
-        render();
-      };
-      r.readAsText(file);
-    };
-    input.click();
-  });
 
   document.body.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
@@ -269,63 +207,22 @@
     const act = btn.getAttribute("data-act");
     if (!act) return;
 
-    const state = loadState();
     if (act === "makeCurrent") {
       const url = btn.getAttribute("data-url");
       const title = btn.getAttribute("data-title") || "";
       const note = btn.getAttribute("data-note") || "";
-      if (url) setCurrent(url, title, note);
-      render();
+      if (url) await saveCurrent(url, title, note);
     } else if (act === "copy") {
       const url = btn.getAttribute("data-url");
       if (!url) return;
       await navigator.clipboard.writeText(url);
       btn.textContent = "Copied!";
       setTimeout(() => btn.textContent = "Copy URL", 700);
-    } else if (act === "del") {
-      const ts = btn.getAttribute("data-ts");
-      if (!ts) return;
-      const next = {
-        current: state.current,
-        history: state.history.filter(x => x.ts !== ts),
-      };
-      // If you deleted the current item, unset it.
-      if (state.current?.ts === ts) next.current = null;
-      saveState(next);
-      render();
     }
   });
 
-  // --- Handle bookmarklet "set" action via hash params ---
-  function handleSetFromHash() {
-    const params = parseHashParams();
-    const setUrl = params.get("set");
-    if (!setUrl) return;
-
-    const url = normalizeUrl(setUrl);
-    const title = (params.get("title") || "").trim();
-    const note = (params.get("note") || "").trim();
-    const go = params.get("go") === "1";
-
-    setCurrent(url, title, note);
-    const close = params.get("close") === "1";
-    if (close) {
-      // give storage a moment to commit
-      setTimeout(() => window.close(), 150);
-      return;
-    }
-    // Clear the hash so refreshing doesn’t re-add duplicates.
-    location.hash = "ui=1";
-    render();
-
-    if (go) {
-      setTimeout(() => location.href = url, 100);
-    }
-  }
-
   // init
-  handleSetFromHash();
-  render();
+  loadFromApi();
   document.body.style.display = "block";
 })();
 </script>

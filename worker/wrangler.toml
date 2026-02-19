@@ -1,0 +1,7 @@
+name = "reading-redirect-hub"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "STORE"
+id = "c1da8fbcb32742c9b332d24d22e8a724"
